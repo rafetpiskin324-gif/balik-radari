@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: balik-radari
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash
+      - key: GEMINI_API_KEY
+        sync: false   # değeri Render panelinde siz girersiniz; dosyaya yazmayın
