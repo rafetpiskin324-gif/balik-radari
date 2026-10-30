@@ -36,3 +36,8 @@ Notlar
 ## Balık fotoğrafları
 - Sunucu, Wikipedia/Wikimedia Commons'tan her türün makale fotoğrafını bulur; yazar ve lisansı detay sayfasında gösterilir. Önce `public/images/fish/<tur>.jpg` varsa o kullanılır (kendi fotoğrafınız önceliklidir).
 - Türle eşleşmeyi gözle kontrol edin; yanlış fotoğraf çıkarsa doğru fotoğrafı `public/images/fish/` içine koyun (levrek.jpg, cipura.jpg...). `WIKI_CONTACT` değişkenine e-posta/site yazmanız Wikimedia için iyi uygulamadır.
+
+## Balık haritası ve fotoğraf sorun giderme
+- Balık detayında "Haritada nerede tutulur?" seçili ilin çevresindeki gerçek OpenStreetMap noktalarını (liman, marina, iskele, mendirek, olta noktası) güncel koşul + EMODnet derinliği + türün derinlik aralığına göre sıralar. Yüzdeler koşul uygunluğudur, gerçek yakalama olasılığı değildir; taban yapısı verisi yoktur.
+- OSM'de kayıtlı olmayan yerler (ör. bir park veya kayalık kıyı) listelenmez.
+- Fotoğraf gelmiyorsa `https://<servis>.onrender.com/api/foto?debug=1` adresini açın: hangi türün neden bulunamadığını gösterir. Sunucu bulamazsa tarayıcı doğrudan Wikipedia'dan dener.

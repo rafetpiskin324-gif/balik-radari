@@ -251,37 +251,122 @@ const COMMONS = process.env.COMMONS_API || 'https://commons.wikimedia.org/w/api.
 const strip = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim().slice(0, 120);
 const okHost = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && (x.hostname === 'upload.wikimedia.org' || process.env.FOTO_ANY_HOST === '1'); } catch (e) { return false; } };
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function getJsonRetry(u, tries = 3) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return await getJson(u); } catch (e) {
+      last = e;
+      if (!/HTTP (429|5\d\d)|timeout|aborted|fetch failed|terminated/i.test(String((e && e.message) || e))) break;
+      await sleep(700 * (i + 1));
+    }
+  }
+  throw last;
+}
+const REST = process.env.WIKI_REST || 'https://en.wikipedia.org/api/rest_v1/page/summary/';
+const fileFromUrl = (u) => { const m = /\/thumb\/[0-9a-f]\/[0-9a-f]{2}\/([^/]+)\//.exec(u || '') || /\/commons\/[0-9a-f]\/[0-9a-f]{2}\/([^/?]+)$/.exec(u || ''); try { return m ? decodeURIComponent(m[1]) : null; } catch (e) { return null; } };
+const sizeUrl = (t, w) => (/\/thumb\//.test(t) ? t.replace(/\/\d+px-/, '/' + w + 'px-') : t);
+
+async function wikiImage(sci) {
+  let err1 = null;
+  try { // 1) REST özet (CDN önbellekli, sınırlamaya daha az takılır)
+    const d = await getJsonRetry(REST + encodeURIComponent(sci.replace(/ /g, '_')) + '?redirect=true');
+    if (d.thumbnail && d.thumbnail.source) return { thumb: d.thumbnail.source, orig: d.originalimage && d.originalimage.source, ow: d.originalimage && d.originalimage.width, title: d.title };
+  } catch (e) { err1 = e; }
+  // 2) action API
+  const d = await getJsonRetry(`${WIKI}?` + new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', redirects: '1', prop: 'pageimages', piprop: 'original|thumbnail|name', pithumbsize: '500', titles: sci }));
+  const pg = d.query && d.query.pages && d.query.pages[0];
+  if (!pg || pg.missing || !pg.thumbnail) throw new Error('görsel bulunamadı' + (err1 ? ' (' + err1.message + ')' : ''));
+  return { thumb: pg.thumbnail.source, orig: pg.original && pg.original.source, ow: pg.original && pg.original.width, title: pg.title, file: pg.pageimage };
+}
+
 async function fotoBul(sci, k) {
   const local = path.join(__dirname, 'public', 'images', 'fish', k + '.jpg');
   if (fs.existsSync(local)) return { kucuk: `/public/images/fish/${k}.jpg`, buyuk: `/public/images/fish/${k}.jpg`, yerel: true };
-  const d = await getJson(`${WIKI}?` + new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', redirects: '1', prop: 'pageimages', piprop: 'original|thumbnail|name', pithumbsize: '500', titles: sci }));
-  const pg = d.query && d.query.pages && d.query.pages[0];
-  if (!pg || pg.missing || !pg.thumbnail || !pg.pageimage || !okHost(pg.thumbnail.source)) return null;
-  const buyuk = pg.original && pg.original.width && pg.original.width <= 1280 ? pg.original.source : pg.thumbnail.source.replace(/\/\d+px-/, '/1280px-');
+  const im = await wikiImage(sci);
+  if (!okHost(im.thumb)) throw new Error('beklenmeyen görsel adresi');
+  const kucuk = sizeUrl(im.thumb, 500);
+  const buyukAday = im.ow && im.ow <= 1280 && im.orig ? im.orig : sizeUrl(im.orig && !/\/thumb\//.test(im.orig) ? im.thumb : im.thumb, 1280);
+  const file = im.file || fileFromUrl(im.thumb) || fileFromUrl(im.orig);
   let yazar = null, lisans = null;
-  try {
-    const c = await getJson(`${COMMONS}?` + new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', prop: 'imageinfo', iiprop: 'extmetadata', iiextmetadatafilter: 'Artist|LicenseShortName', titles: 'File:' + pg.pageimage }));
-    const em = c.query.pages[0].imageinfo[0].extmetadata;
-    yazar = strip(em.Artist && em.Artist.value) || null; lisans = strip(em.LicenseShortName && em.LicenseShortName.value) || null;
-  } catch (e) { /* kaynak bilgisi alınamadıysa fotoğraf yine de gösterilir, uyarı istemcide */ }
-  return { kucuk: pg.thumbnail.source, buyuk: okHost(buyuk) ? buyuk : pg.thumbnail.source, yazar, lisans, kaynak: 'https://commons.wikimedia.org/wiki/File:' + encodeURIComponent(pg.pageimage), sayfa: pg.title };
+  if (file) {
+    try {
+      const c = await getJsonRetry(`${COMMONS}?` + new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', prop: 'imageinfo', iiprop: 'extmetadata', iiextmetadatafilter: 'Artist|LicenseShortName', titles: 'File:' + file }), 2);
+      const em = c.query.pages[0].imageinfo[0].extmetadata;
+      yazar = strip(em.Artist && em.Artist.value) || null; lisans = strip(em.LicenseShortName && em.LicenseShortName.value) || null;
+    } catch (e) { /* kaynak bilgisi alınamadıysa fotoğraf yine gösterilir */ }
+  }
+  return { kucuk, buyuk: okHost(buyukAday) ? buyukAday : kucuk, yazar, lisans, kaynak: file ? 'https://commons.wikimedia.org/wiki/File:' + encodeURIComponent(file) : 'https://en.wikipedia.org/wiki/' + encodeURIComponent(sci.replace(/ /g, '_')), sayfa: im.title };
 }
-let FC = null, FI = null;
-const fotolar = () => {
-  if (FC && Date.now() - FC.ts < 24 * 3600 * 1000) return Promise.resolve(FC.d);
-  if (FI) return FI;
-  FI = (async () => {
-    const out = {};
-    await Promise.all(Object.entries(FOTO_TUR).map(async ([k, sci]) => { try { out[k] = await fotoBul(sci, k); } catch (e) { out[k] = null; } }));
-    const ok = Object.values(out).some(Boolean);
-    FC = { ts: ok ? Date.now() : Date.now() - 24 * 3600 * 1000 + 5 * 60 * 1000, d: out };
-    return out;
-  })().finally(() => { FI = null; });
-  return FI;
-};
+
+// Her tür ayrı önbelleklenir: başarı 24 saat, hata yalnızca 2 dakika (kısmi hata günlerce takılı kalmaz).
+const FC2 = new Map(), FI2 = new Map();
+function fotoGet(k) {
+  const c = FC2.get(k);
+  if (c && Date.now() - c.ts < (c.v ? 24 * 3600 * 1000 : 2 * 60 * 1000)) return Promise.resolve(c.v);
+  if (FI2.has(k)) return FI2.get(k);
+  const p = (async () => {
+    let v = null, err = null;
+    try { v = await fotoBul(FOTO_TUR[k], k); } catch (e) { err = String((e && e.message) || e); console.error('Foto hata', k, err); }
+    FC2.set(k, { ts: Date.now(), v, err });
+    return v;
+  })().finally(() => FI2.delete(k));
+  FI2.set(k, p);
+  return p;
+}
+async function fotolar() {
+  const keys = Object.keys(FOTO_TUR), out = {};
+  let i = 0;
+  await Promise.all([0, 1, 2].map(async () => { while (i < keys.length) { const k = keys[i++]; out[k] = await fotoGet(k); } }));
+  return out;
+}
 app.get('/api/foto', async (req, res) => {
-  try { res.set('Cache-Control', 'public, max-age=3600'); res.json({ fotolar: await fotolar() }); }
-  catch (e) { res.status(502).json({ error: 'Fotoğraflar alınamadı.' }); }
+  try {
+    const f = await fotolar();
+    const eksik = Object.values(f).some((v) => !v);
+    res.set('Cache-Control', eksik ? 'no-store' : 'public, max-age=3600');
+    const body = { fotolar: f };
+    if (req.query.debug === '1') body.hatalar = Object.fromEntries([...FC2].filter(([, v]) => v.err).map(([k, v]) => [k, v.err]));
+    res.json(body);
+  } catch (e) { res.status(502).json({ error: 'Fotoğraflar alınamadı.' }); }
+});
+
+// ---- Derinlik (EMODnet batimetri) — sunucuda önbellekli ----
+const EMOD = process.env.EMODNET_WMS || 'https://ows.emodnet-bathymetry.eu/wms';
+const DC = new Map();
+async function depthPt(la, lo) {
+  const k = la.toFixed(3) + ',' + lo.toFixed(3);
+  if (DC.has(k)) return DC.get(k);
+  const d = 0.004;
+  const u = `${EMOD}?service=WMS&version=1.1.1&request=GetFeatureInfo&layers=emodnet:mean&query_layers=emodnet:mean&styles=&srs=EPSG:4326&bbox=${lo - d},${la - d},${lo + d},${la + d}&width=101&height=101&x=50&y=50&info_format=application/json&feature_count=1`;
+  try {
+    const r = await getJson(u);
+    const f = r.features && r.features[0];
+    const n = f ? Object.values(f.properties || {}).find((x) => typeof x === 'number') : null;
+    const v = typeof n === 'number' ? n : null;
+    DC.set(k, v);
+    if (DC.size > 5000) DC.delete(DC.keys().next().value);
+    return v;
+  } catch (e) { return undefined; } // hata: önbelleğe yazılmaz
+}
+async function depthNear(la, lo) {
+  const v = await depthPt(la, lo);
+  if (typeof v === 'number' && v < 0) return { m: Math.round(-v), yakin: false };
+  for (const [dy, dx] of [[0.004, 0], [-0.004, 0], [0, 0.005], [0, -0.005]]) {
+    const w = await depthPt(la + dy, lo + dx);
+    if (typeof w === 'number' && w < 0) return { m: Math.round(-w), yakin: true }; // kıyıdaki noktada ~400 m çevredeki su derinliği
+  }
+  return null;
+}
+app.post('/api/derinlik', rateLimit({ windowMs: 60 * 1000, limit: 12, standardHeaders: true, legacyHeaders: false, message: { error: 'Çok fazla istek.' } }), async (req, res) => {
+  const n = req.body && req.body.n;
+  if (!Array.isArray(n) || n.length < 1 || n.length > 24) return res.status(400).json({ error: 'Geçersiz istek.' });
+  const pts = n.map((p) => (Array.isArray(p) ? [Number(p[0]), Number(p[1])] : [NaN, NaN]));
+  if (pts.some(([a, b]) => !(a > 34 && a < 43.5 && b > 25 && b < 46))) return res.status(400).json({ error: 'Koordinatlar Türkiye sınırları dışında.' });
+  const out = new Array(pts.length).fill(null);
+  let i = 0;
+  await Promise.all([0, 1, 2, 3, 4].map(async () => { while (i < pts.length) { const k = i++; try { out[k] = await depthNear(pts[k][0], pts[k][1]); } catch (e) { out[k] = null; } } }));
+  res.json({ d: out, kaynak: 'EMODnet Bathymetry' });
 });
 
 const PORT = process.env.PORT || 3000;
