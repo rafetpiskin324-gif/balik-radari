@@ -1,12 +1,16 @@
 // Balık Radarı — statik site + güvenli Gemini asistan proxy'si.
 // API anahtarı yalnızca bu sunucuda (ortam değişkeni) durur; tarayıcıya hiç gönderilmez.
 const express = require('express');
+const compression = require('compression');
+const fs = require('fs');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 
 const app = express();
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
+// Sıkıştırma (canlı akış hariç: SSE tamponlanmamalı)
+app.use(compression({ filter: (req, res) => (req.path.startsWith('/api/sohbet/akis') ? false : compression.filter(req, res)) }));
 app.use(express.json({ limit: '24kb' }));
 
 const KEY = process.env.GEMINI_API_KEY;
@@ -106,7 +110,8 @@ app.post('/api/asistan', lim, async (req, res) => {
 
 // ---- Canlı balıkçı sohbeti (SSE + POST) ----
 // Mesajlar BELLEKTE tutulur: sunucu yeniden başlayınca/uyuyunca silinir. Kalıcı arşiv için veritabanı gerekir.
-const IL = ["Adana", "Adıyaman", "Afyonkarahisar", "Ağrı", "Aksaray", "Amasya", "Ankara", "Antalya", "Ardahan", "Artvin", "Aydın", "Balıkesir", "Bartın", "Batman", "Bayburt", "Bilecik", "Bingöl", "Bitlis", "Bolu", "Burdur", "Bursa", "Çanakkale", "Çankırı", "Çorum", "Denizli", "Diyarbakır", "Düzce", "Edirne", "Elazığ", "Erzincan", "Erzurum", "Eskişehir", "Gaziantep", "Giresun", "Gümüşhane", "Hakkâri", "Hatay", "Iğdır", "Isparta", "Kahramanmaraş", "Karabük", "Karaman", "Kars", "Kastamonu", "Kayseri", "Kırıkkale", "Kırklareli", "Kırşehir", "Kilis", "Kocaeli", "Konya", "Kütahya", "Malatya", "Manisa", "Mardin", "Mersin", "Muğla", "Muş", "Nevşehir", "Niğde", "Ordu", "Osmaniye", "Rize", "Sakarya", "Samsun", "Siirt", "Sinop", "Sivas", "Şanlıurfa", "Şırnak", "Tekirdağ", "Tokat", "Trabzon", "Tunceli", "Uşak", "Van", "Yalova", "Yozgat", "Zonguldak", "İstanbul", "İzmir"];
+const PROV = [["Adana",37.0,35.32,"Akdeniz","a"],["Adıyaman",37.76,38.28,"Güneydoğu Anadolu",""],["Afyonkarahisar",38.76,30.54,"Ege",""],["Ağrı",39.72,43.05,"Doğu Anadolu",""],["Aksaray",38.37,34.03,"İç Anadolu",""],["Amasya",40.65,35.83,"Karadeniz",""],["Ankara",39.93,32.86,"İç Anadolu",""],["Antalya",36.9,30.7,"Akdeniz","a"],["Ardahan",41.11,42.7,"Doğu Anadolu",""],["Artvin",41.18,41.82,"Karadeniz","k"],["Aydın",37.85,27.84,"Ege","e"],["Balıkesir",39.65,27.89,"Marmara","em"],["Bartın",41.64,32.34,"Karadeniz","k"],["Batman",37.88,41.13,"Güneydoğu Anadolu",""],["Bayburt",40.26,40.23,"Karadeniz",""],["Bilecik",40.14,29.98,"Marmara",""],["Bingöl",38.88,40.5,"Doğu Anadolu",""],["Bitlis",38.4,42.11,"Doğu Anadolu",""],["Bolu",40.74,31.61,"Karadeniz",""],["Burdur",37.72,30.29,"Akdeniz",""],["Bursa",40.19,29.06,"Marmara","m"],["Çanakkale",40.15,26.41,"Marmara","em"],["Çankırı",40.6,33.61,"İç Anadolu",""],["Çorum",40.55,34.95,"Karadeniz",""],["Denizli",37.78,29.09,"Ege",""],["Diyarbakır",37.91,40.24,"Güneydoğu Anadolu",""],["Düzce",40.84,31.16,"Karadeniz","k"],["Edirne",41.68,26.56,"Marmara","e"],["Elazığ",38.67,39.22,"Doğu Anadolu",""],["Erzincan",39.75,39.49,"Doğu Anadolu",""],["Erzurum",39.9,41.27,"Doğu Anadolu",""],["Eskişehir",39.78,30.52,"İç Anadolu",""],["Gaziantep",37.07,37.38,"Güneydoğu Anadolu",""],["Giresun",40.91,38.39,"Karadeniz","k"],["Gümüşhane",40.46,39.48,"Karadeniz",""],["Hakkâri",37.58,43.74,"Doğu Anadolu",""],["Hatay",36.4,36.35,"Akdeniz","a"],["Iğdır",39.92,44.04,"Doğu Anadolu",""],["Isparta",37.76,30.55,"Akdeniz",""],["Kahramanmaraş",37.58,36.94,"Akdeniz",""],["Karabük",41.2,32.63,"Karadeniz",""],["Karaman",37.18,33.22,"İç Anadolu",""],["Kars",40.6,43.1,"Doğu Anadolu",""],["Kastamonu",41.39,33.78,"Karadeniz","k"],["Kayseri",38.73,35.49,"İç Anadolu",""],["Kırıkkale",39.85,33.52,"İç Anadolu",""],["Kırklareli",41.74,27.23,"Marmara","k"],["Kırşehir",39.15,34.16,"İç Anadolu",""],["Kilis",36.72,37.12,"Güneydoğu Anadolu",""],["Kocaeli",40.77,29.92,"Marmara","mk"],["Konya",37.87,32.48,"İç Anadolu",""],["Kütahya",39.42,29.98,"Ege",""],["Malatya",38.35,38.31,"Doğu Anadolu",""],["Manisa",38.61,27.43,"Ege",""],["Mardin",37.31,40.74,"Güneydoğu Anadolu",""],["Mersin",36.8,34.64,"Akdeniz","a"],["Muğla",37.22,28.36,"Ege","ea"],["Muş",38.74,41.49,"Doğu Anadolu",""],["Nevşehir",38.62,34.71,"İç Anadolu",""],["Niğde",37.97,34.68,"İç Anadolu",""],["Ordu",40.98,37.88,"Karadeniz","k"],["Osmaniye",37.07,36.25,"Akdeniz",""],["Rize",41.02,40.52,"Karadeniz","k"],["Sakarya",40.69,30.4,"Marmara","k"],["Samsun",41.29,36.33,"Karadeniz","k"],["Siirt",37.93,41.94,"Güneydoğu Anadolu",""],["Sinop",42.03,35.15,"Karadeniz","k"],["Sivas",39.75,37.02,"İç Anadolu",""],["Şanlıurfa",37.16,38.79,"Güneydoğu Anadolu",""],["Şırnak",37.52,42.46,"Güneydoğu Anadolu",""],["Tekirdağ",40.98,27.51,"Marmara","m"],["Tokat",40.31,36.55,"Karadeniz",""],["Trabzon",41.0,39.72,"Karadeniz","k"],["Tunceli",39.11,39.55,"Doğu Anadolu",""],["Uşak",38.68,29.41,"Ege",""],["Van",38.49,43.38,"Doğu Anadolu",""],["Yalova",40.65,29.27,"Marmara","m"],["Yozgat",39.82,34.81,"İç Anadolu",""],["Zonguldak",41.45,31.8,"Karadeniz","k"],["İstanbul",41.01,28.98,"Marmara","mk"],["İzmir",38.42,27.14,"Ege","e"]];
+const IL = PROV.map((p) => p[0]);
 const fold = (s) => String(s).toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ş/g, 's').replace(/ö/g, 'o').replace(/ç/g, 'c').replace(/â/g, 'a').replace(/î/g, 'i').replace(/û/g, 'u');
 const slug = (s) => fold(s).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 const ROOMS = new Map([['genel', { name: 'Genel', msgs: [], clients: new Set() }]]);
@@ -195,6 +200,89 @@ setInterval(() => {
   for (const r of ROOMS.values()) r.msgs = r.msgs.filter((m) => m.ts > lim);
   for (const [k, v] of lastByCid) if (v.ts < lim) lastByCid.delete(k);
 }, 3600 * 1000).unref();
+
+// ---- Hava/deniz verisi önbelleği (herkes için ortak, hızlı) ----
+const UA = 'BalikRadari/1.0 (' + (process.env.WIKI_CONTACT || 'https://github.com/') + ')';
+const OM_W = process.env.OM_FORECAST || 'https://api.open-meteo.com/v1/forecast';
+const OM_M = process.env.OM_MARINE || 'https://marine-api.open-meteo.com/v1/marine';
+const getJson = async (u) => {
+  const r = await fetch(u, { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': UA } });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+};
+const urlW = (la, lo) => `${OM_W}?latitude=${la}&longitude=${lo}&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=pressure_msl&past_hours=3&forecast_hours=1&daily=sunrise,sunset&forecast_days=1&timezone=auto&wind_speed_unit=kmh`;
+const urlM = (la, lo) => `${OM_M}?latitude=${la}&longitude=${lo}&current=wave_height,wave_period,wave_direction,sea_surface_temperature,sea_level_height_msl,ocean_current_velocity,ocean_current_direction&timezone=auto`;
+const COND = new Map(), INFL = new Map(), TTL = 10 * 60 * 1000, STALE = 60 * 60 * 1000;
+
+function refresh(k) {
+  if (INFL.has(k)) return INFL.get(k);
+  const p = PROV.find((x) => slug(x[0]) === k);
+  const pr = Promise.allSettled([getJson(urlW(p[1], p[2])), p[4] ? getJson(urlM(p[1], p[2])) : Promise.resolve(null)])
+    .then(([w, m]) => {
+      const nw = w.status === 'fulfilled' ? w.value : null, nm = m.status === 'fulfilled' ? m.value : null;
+      const old = COND.get(k);
+      if (nw || nm) COND.set(k, { w: nw || (old && old.w) || null, m: nm || (old && old.m) || null, ts: Date.now() });
+      return COND.get(k) || null;
+    })
+    .finally(() => INFL.delete(k));
+  INFL.set(k, pr);
+  return pr;
+}
+app.get('/api/kosullar', async (req, res) => {
+  const k = String(req.query.il || '');
+  if (!PROV.some((x) => slug(x[0]) === k)) return res.status(400).json({ error: 'Geçersiz il.' });
+  const c = COND.get(k), age = c ? Date.now() - c.ts : Infinity;
+  res.set('Cache-Control', 'public, max-age=60');
+  if (c && age < TTL) return res.json({ w: c.w, m: c.m, ts: c.ts });
+  if (c && age < STALE) { refresh(k).catch(() => {}); return res.json({ w: c.w, m: c.m, ts: c.ts, eski: true }); }
+  const v = await refresh(k).catch(() => null);
+  if (!v) return res.status(502).json({ error: 'Veri kaynağına ulaşılamadı.' });
+  res.json({ w: v.w, m: v.m, ts: v.ts });
+});
+// Sık açılan iller arka planda sıcak tutulur (ilk açılış anında olsun)
+const POP = ['İstanbul', 'İzmir', 'Antalya', 'Muğla', 'Mersin', 'Trabzon', 'Samsun', 'Çanakkale', 'Balıkesir', 'Aydın', 'Kocaeli', 'Tekirdağ'].map(slug);
+const prewarm = () => POP.forEach((k, i) => setTimeout(() => refresh(k).catch(() => {}), i * 400));
+if (!process.env.NO_PREWARM) { prewarm(); setInterval(prewarm, 15 * 60 * 1000).unref(); }
+
+// ---- Balık fotoğrafları (Wikipedia/Wikimedia Commons; yazar ve lisans ile) ----
+const FOTO_TUR = { levrek: 'Dicentrarchus labrax', cipura: 'Sparus aurata', lufer: 'Pomatomus saltatrix', istavrit: 'Trachurus mediterraneus', palamut: 'Sarda sarda', kefal: 'Mugil cephalus', karagoz: 'Diplodus vulgaris', kalamar: 'Loligo vulgaris', alabalik: 'Oncorhynchus mykiss', sazan: 'Cyprinus carpio' };
+const WIKI = process.env.WIKI_API || 'https://en.wikipedia.org/w/api.php';
+const COMMONS = process.env.COMMONS_API || 'https://commons.wikimedia.org/w/api.php';
+const strip = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim().slice(0, 120);
+const okHost = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && (x.hostname === 'upload.wikimedia.org' || process.env.FOTO_ANY_HOST === '1'); } catch (e) { return false; } };
+
+async function fotoBul(sci, k) {
+  const local = path.join(__dirname, 'public', 'images', 'fish', k + '.jpg');
+  if (fs.existsSync(local)) return { kucuk: `/public/images/fish/${k}.jpg`, buyuk: `/public/images/fish/${k}.jpg`, yerel: true };
+  const d = await getJson(`${WIKI}?` + new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', redirects: '1', prop: 'pageimages', piprop: 'original|thumbnail|name', pithumbsize: '500', titles: sci }));
+  const pg = d.query && d.query.pages && d.query.pages[0];
+  if (!pg || pg.missing || !pg.thumbnail || !pg.pageimage || !okHost(pg.thumbnail.source)) return null;
+  const buyuk = pg.original && pg.original.width && pg.original.width <= 1280 ? pg.original.source : pg.thumbnail.source.replace(/\/\d+px-/, '/1280px-');
+  let yazar = null, lisans = null;
+  try {
+    const c = await getJson(`${COMMONS}?` + new URLSearchParams({ action: 'query', format: 'json', formatversion: '2', prop: 'imageinfo', iiprop: 'extmetadata', iiextmetadatafilter: 'Artist|LicenseShortName', titles: 'File:' + pg.pageimage }));
+    const em = c.query.pages[0].imageinfo[0].extmetadata;
+    yazar = strip(em.Artist && em.Artist.value) || null; lisans = strip(em.LicenseShortName && em.LicenseShortName.value) || null;
+  } catch (e) { /* kaynak bilgisi alınamadıysa fotoğraf yine de gösterilir, uyarı istemcide */ }
+  return { kucuk: pg.thumbnail.source, buyuk: okHost(buyuk) ? buyuk : pg.thumbnail.source, yazar, lisans, kaynak: 'https://commons.wikimedia.org/wiki/File:' + encodeURIComponent(pg.pageimage), sayfa: pg.title };
+}
+let FC = null, FI = null;
+const fotolar = () => {
+  if (FC && Date.now() - FC.ts < 24 * 3600 * 1000) return Promise.resolve(FC.d);
+  if (FI) return FI;
+  FI = (async () => {
+    const out = {};
+    await Promise.all(Object.entries(FOTO_TUR).map(async ([k, sci]) => { try { out[k] = await fotoBul(sci, k); } catch (e) { out[k] = null; } }));
+    const ok = Object.values(out).some(Boolean);
+    FC = { ts: ok ? Date.now() : Date.now() - 24 * 3600 * 1000 + 5 * 60 * 1000, d: out };
+    return out;
+  })().finally(() => { FI = null; });
+  return FI;
+};
+app.get('/api/foto', async (req, res) => {
+  try { res.set('Cache-Control', 'public, max-age=3600'); res.json({ fotolar: await fotolar() }); }
+  catch (e) { res.status(502).json({ error: 'Fotoğraflar alınamadı.' }); }
+});
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Balık Radarı ${PORT} portunda. Asistan: ${KEY ? 'hazır' : 'GEMINI_API_KEY yok'}`));

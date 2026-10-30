@@ -27,3 +27,12 @@ Notlar
 - Uygunsuz kelime filtresi için Render'da `BLOCKED_WORDS` değişkenine virgülle ayrılmış kelimeler yazın.
 - Tek bir Render örneği (ücretsiz plan dahil) için yeterlidir; birden fazla örneğe ölçeklenirse mesajlar örnekler arasında paylaşılmaz.
 - Gerçek kullanıcıya açmadan önce gizlilik/kullanım koşulu metni ve gerekirse yönetici (moderatör) paneli ekleyin.
+
+## Hız
+- Hava/deniz verisi sunucuda 10 dakika önbellekte tutulur (herkes için ortak). Sık açılan 12 il arka planda sıcak tutulur. Eski veri anında gösterilir, arka planda yenilenir.
+- Metin/JSON yanıtları sıkıştırılır. Harita ve ikon kütüphaneleri sayfayı bloklamaz.
+- **En büyük yavaşlık Render ücretsiz planının uyku modudur** (15 dk işlem olmazsa uyur, ilk açılış 30-60 sn sürer). Çözüm: ücretli plan (Starter) veya uptimerobot.com ile `/healthz` adresini 5 dakikada bir çağırtmak.
+
+## Balık fotoğrafları
+- Sunucu, Wikipedia/Wikimedia Commons'tan her türün makale fotoğrafını bulur; yazar ve lisansı detay sayfasında gösterilir. Önce `public/images/fish/<tur>.jpg` varsa o kullanılır (kendi fotoğrafınız önceliklidir).
+- Türle eşleşmeyi gözle kontrol edin; yanlış fotoğraf çıkarsa doğru fotoğrafı `public/images/fish/` içine koyun (levrek.jpg, cipura.jpg...). `WIKI_CONTACT` değişkenine e-posta/site yazmanız Wikimedia için iyi uygulamadır.

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "express": "^4.19.2",
-    "express-rate-limit": "^7.4.0"
+    "express-rate-limit": "^7.4.0",
+    "compression": "^1.7.4"
   }
 }
