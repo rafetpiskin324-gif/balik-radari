@@ -211,7 +211,7 @@ const getJson = async (u) => {
   return r.json();
 };
 const urlW = (la, lo) => `${OM_W}?latitude=${la}&longitude=${lo}&current=temperature_2m,relative_humidity_2m,precipitation,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=pressure_msl&past_hours=3&forecast_hours=1&daily=sunrise,sunset&forecast_days=1&timezone=auto&wind_speed_unit=kmh`;
-const urlM = (la, lo) => `${OM_M}?latitude=${la}&longitude=${lo}&current=wave_height,wave_period,wave_direction,sea_surface_temperature,sea_level_height_msl,ocean_current_velocity,ocean_current_direction&timezone=auto`;
+const urlM = (la, lo) => `${OM_M}?latitude=${la}&longitude=${lo}&current=wave_height,wave_period,wave_direction,sea_surface_temperature,sea_level_height_msl,ocean_current_velocity,ocean_current_direction&hourly=sea_surface_temperature&past_days=3&forecast_days=1&timezone=auto`;
 const COND = new Map(), INFL = new Map(), TTL = 10 * 60 * 1000, STALE = 60 * 60 * 1000;
 
 function refresh(k) {
@@ -249,7 +249,7 @@ const FOTO_TUR = { levrek: 'Dicentrarchus labrax', cipura: 'Sparus aurata', lufe
 const WIKI = process.env.WIKI_API || 'https://en.wikipedia.org/w/api.php';
 const COMMONS = process.env.COMMONS_API || 'https://commons.wikimedia.org/w/api.php';
 const strip = (s) => String(s || '').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim().slice(0, 120);
-const okHost = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && (x.hostname === 'upload.wikimedia.org' || process.env.FOTO_ANY_HOST === '1'); } catch (e) { return false; } };
+const okHost = (u) => { try { const x = new URL(u); return process.env.FOTO_ANY_HOST === '1' || (x.protocol === 'https:' && x.hostname === 'upload.wikimedia.org'); } catch (e) { return false; } };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function getJsonRetry(u, tries = 3) {
@@ -322,7 +322,11 @@ async function fotolar() {
 }
 app.get('/api/foto', async (req, res) => {
   try {
-    const f = await fotolar();
+    if (req.query.yenile === '1') for (const [k, v] of FC2) if (!v.v) FC2.delete(k);
+    // En fazla 8 sn bekle: biten türler hemen döner, kalanlar arka planda sürer (istemci eksikleri tamamlar)
+    const f0 = await Promise.race([fotolar(), sleep(8000).then(() => Object.fromEntries(Object.keys(FOTO_TUR).map((k) => [k, (FC2.get(k) || {}).v || null])))]);
+    const f = {};
+    for (const [k, v] of Object.entries(f0)) f[k] = v && !v.yerel ? { kucuk: `/foto/${k}-k.jpg`, buyuk: `/foto/${k}-b.jpg`, dogrudan: { kucuk: v.kucuk, buyuk: v.buyuk }, yazar: v.yazar, lisans: v.lisans, kaynak: v.kaynak, sayfa: v.sayfa } : v;
     const eksik = Object.values(f).some((v) => !v);
     res.set('Cache-Control', eksik ? 'no-store' : 'public, max-age=3600');
     const body = { fotolar: f };
@@ -367,6 +371,172 @@ app.post('/api/derinlik', rateLimit({ windowMs: 60 * 1000, limit: 12, standardHe
   let i = 0;
   await Promise.all([0, 1, 2, 3, 4].map(async () => { while (i < pts.length) { const k = i++; try { out[k] = await depthNear(pts[k][0], pts[k][1]); } catch (e) { out[k] = null; } } }));
   res.json({ d: out, kaynak: 'EMODnet Bathymetry' });
+});
+
+// ---- Görsel vekili: fotoğraf baytlarını sunucu alır, önbellekler ve kendi adresinden sunar ----
+const IMGC = new Map();
+app.get('/foto/:ad', async (req, res) => {
+  const m = /^([a-z]+)-([kb])\.jpg$/.exec(req.params.ad);
+  if (!m || !FOTO_TUR[m[1]]) return res.status(404).end();
+  try {
+    const f = await fotoGet(m[1]);
+    if (!f || f.yerel) return res.status(404).end();
+    const url = m[2] === 'k' ? f.kucuk : f.buyuk, key = m[1] + m[2];
+    let c = IMGC.get(key);
+    if (!c || c.url !== url) {
+      let last;
+      for (let i = 0; i < 3 && !c; i++) {
+        try {
+          const r = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(20000) });
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const buf = Buffer.from(await r.arrayBuffer());
+          if (buf.length > 6 * 1024 * 1024) throw new Error('görsel çok büyük');
+          c = { url, buf, type: r.headers.get('content-type') || 'image/jpeg' };
+        } catch (e) { last = e; await sleep(600 * (i + 1)); }
+      }
+      if (!c) { console.error('Görsel indirilemedi', key, last && last.message); return res.status(502).end(); }
+      IMGC.set(key, c);
+    }
+    res.set({ 'Content-Type': c.type, 'Cache-Control': 'public, max-age=604800' });
+    res.send(c.buf);
+  } catch (e) { res.status(502).end(); }
+});
+
+// ---- Overpass (yedek sunuculu, önbellekli) ----
+const OVP = (process.env.OVERPASS_URLS || 'https://overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.private.coffee/api/interpreter').split(',');
+async function overpass(q) {
+  let last;
+  for (const u of OVP) {
+    try {
+      const r = await fetch(u, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': UA }, signal: AbortSignal.timeout(40000) });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const j = await r.json();
+      if (j.remark && /timed out|runtime error|out of memory/i.test(j.remark) && !(j.elements || []).length) throw new Error('Overpass zaman aşımı');
+      return j.elements || [];
+    } catch (e) { last = e; console.error('Overpass hata', u, e && e.message); }
+  }
+  throw last;
+}
+const OC = new Map();
+async function overpassCached(key, q, ttl = 15 * 60 * 1000) {
+  const c = OC.get(key);
+  if (c && Date.now() - c.ts < ttl) return c.v;
+  try {
+    const v = await overpass(q);
+    OC.set(key, { ts: Date.now(), v });
+    if (OC.size > 300) OC.delete(OC.keys().next().value);
+    return v;
+  } catch (e) { if (c) return c.v; throw e; }
+}
+const PTYS = (t) => (t.leisure === 'marina' ? 'Marina' : t.man_made === 'pier' ? 'İskele' : t.man_made === 'breakwater' ? 'Mendirek' : (t.leisure === 'fishing' || t.sport === 'fishing') ? 'Olta noktası' : 'Liman');
+const PRI = { 'Olta noktası': 0, 'İskele': 1, 'Mendirek': 2, 'Liman': 3, 'Marina': 4 };
+function normEl(e) {
+  const t = e.tags || {}, la = e.lat != null ? e.lat : e.center && e.center.lat, lo = e.lon != null ? e.lon : e.center && e.center.lon;
+  if (la == null || lo == null) return null;
+  return { id: e.type[0] + e.id, la: +(+la).toFixed(5), lo: +(+lo).toFixed(5), t: PTYS(t), n: t.name || t['name:tr'] || null };
+}
+const hav = (a, b, c, d) => { const R = 6371, x = (d - b) * Math.PI / 180 * Math.cos((a + c) / 2 * Math.PI / 180), y = (c - a) * Math.PI / 180; return Math.sqrt(x * x + y * y) * R; };
+const inTR = (a, b) => a > 34 && a < 43.5 && b > 25 && b < 46;
+
+app.get('/api/liman', async (req, res) => {
+  const [s0, w0, n0, e0] = ['s', 'w', 'n', 'e'].map((k) => Number(req.query[k]));
+  if (![s0, w0, n0, e0].every(Number.isFinite) || !inTR(s0, w0) || !inTR(n0, e0) || n0 <= s0 || e0 <= w0 || n0 - s0 > 4 || e0 - w0 > 5) return res.status(400).json({ error: 'Geçersiz alan.' });
+  const tam = req.query.tam === '1', r2 = (x) => x.toFixed(2), bb = [s0, w0, n0, e0].map((x) => x.toFixed(4)).join(',');
+  const q = `[out:json][timeout:30];(nwr["harbour"](${bb});nwr["leisure"="marina"](${bb});${tam ? `nwr["man_made"~"pier|breakwater"]["name"](${bb});nwr["leisure"="fishing"](${bb});` : ''});out center 300;`;
+  try {
+    const els = await overpassCached(`b:${[s0, w0, n0, e0].map(r2).join(',')}:${tam}`, q);
+    const seen = {};
+    res.set('Cache-Control', 'public, max-age=120');
+    res.json({ noktalar: els.map(normEl).filter((o) => o && !seen[o.id] && (seen[o.id] = 1)), kaynak: 'OpenStreetMap (Overpass)' });
+  } catch (e) { res.status(502).json({ error: 'Liman verisi kaynağına ulaşılamadı.' }); }
+});
+
+// ---- Tek nokta: deniz + rüzgâr + derinlik (haritaya dokunma) ----
+const NC = new Map();
+function sstTrendS(m) {
+  try {
+    const h = m.hourly, v = h.sea_surface_temperature, t = h.time, c = m.current.time;
+    let i = t.indexOf(c); if (i < 0) i = t.findIndex((x) => x >= c); if (i < 0) return null;
+    let a = null; for (let k = 0; k <= Math.max(0, i - 60) && a == null; k++) a = v[k];
+    return a == null || v[i] == null ? null : +(v[i] - a).toFixed(2);
+  } catch (e) { return null; }
+}
+app.get('/api/nokta', async (req, res) => {
+  const la = Number(req.query.lat), lo = Number(req.query.lon);
+  if (!Number.isFinite(la) || !Number.isFinite(lo) || !inTR(la, lo)) return res.status(400).json({ error: 'Koordinatlar Türkiye sınırları dışında.' });
+  const key = la.toFixed(3) + ',' + lo.toFixed(3), c = NC.get(key);
+  if (c && Date.now() - c.ts < 10 * 60 * 1000) return res.json(c.v);
+  const [m, w, d0] = await Promise.allSettled([getJsonRetry(urlM(la, lo)), getJsonRetry(urlW(la, lo)), depthPt(la, lo)]);
+  const mm = m.status === 'fulfilled' ? m.value : null, ww = w.status === 'fulfilled' ? w.value : null;
+  let dep = null, kara = false;
+  if (d0.status === 'fulfilled' && typeof d0.value === 'number') {
+    if (d0.value < 0) dep = { m: Math.round(-d0.value), yakin: false };
+    else { kara = true; dep = await depthNear(la, lo).catch(() => null); }
+  }
+  const v = { m: mm && mm.current || null, dst: mm ? sstTrendS(mm) : null, w: ww && ww.current || null, dep, kara, hata: { deniz: !mm, ruzgar: !ww, derinlik: d0.status !== 'fulfilled' || d0.value === undefined } };
+  if (mm || ww) NC.set(key, { ts: Date.now(), v });
+  if (!mm && !ww) return res.status(502).json({ error: 'Veri kaynaklarına ulaşılamadı.' });
+  res.json(v);
+});
+
+// ---- İl bazlı mera verisi: gerçek OSM noktaları + deniz/rüzgâr + derinlik (tek seferde, önbellekli) ----
+const MC = new Map(), MI = new Map();
+const ptypeOk = (o) => o && o.n;
+async function meraBuild(p) {
+  const name = p[0], la0 = p[1], lo0 = p[2];
+  const A = `area["boundary"="administrative"]["admin_level"="4"]["name"="${name}"]->.a;`;
+  const sel = (g) => `nwr["harbour"]${g};nwr["leisure"="marina"]${g};nwr["leisure"="fishing"]${g};nwr["sport"="fishing"]${g};nwr["man_made"~"pier|breakwater"]["name"]${g};`;
+  let els = [];
+  try { els = await overpassCached('m:' + name, `[out:json][timeout:40];${A}(${sel('(area.a)')});out center 600;`, 6 * 3600 * 1000); } catch (e) { console.error('Mera alan sorgusu başarısız', name, e && e.message); }
+  if (!els.length) {
+    const bb = [la0 - 0.6, lo0 - 0.8, la0 + 0.6, lo0 + 0.8].map((x) => x.toFixed(3)).join(',');
+    els = await overpassCached('mb:' + name, `[out:json][timeout:40];(${sel('(' + bb + ')')});out center 600;`, 6 * 3600 * 1000);
+  }
+  let places = [];
+  try { places = await overpassCached('p:' + name, `[out:json][timeout:40];${A}(node["place"~"^(city|town|suburb|village)$"]["name"](area.a););out 900;`, 24 * 3600 * 1000); } catch (e) { /* bölge adı bulunamazsa "Diğer" */ }
+  const pl = places.filter((e) => e.lat != null && e.tags && e.tags.name).map((e) => ({ n: e.tags.name, la: e.lat, lo: e.lon, r: { city: 3, town: 3, suburb: 2, village: 1 }[e.tags.place] || 1 }));
+  const seen = {}, nm = {};
+  let sp = els.map(normEl).filter(ptypeOk).filter((o) => !seen[o.id] && (seen[o.id] = 1)).filter((o) => { const k = o.n + '|' + o.la.toFixed(2) + ',' + o.lo.toFixed(2); return !nm[k] && (nm[k] = 1); });
+  sp.forEach((o) => {
+    let b = null, bd = 12; // 12 km içindeki en yakın yerleşim adı (kasaba/mahalle öncelikli)
+    for (const q of pl) { const d = hav(o.la, o.lo, q.la, q.lo) - (q.r >= 2 ? 1.5 : 0); if (d < bd) { bd = d; b = q.n; } }
+    o.b = b || 'Diğer';
+  });
+  sp.sort((a, b) => PRI[a.t] - PRI[b.t] || a.n.localeCompare(b.n, 'tr'));
+  const per = {}; sp = sp.filter((o) => (per[o.b] = (per[o.b] || 0) + 1) <= 6).slice(0, 45);
+  if (!sp.length) return { il: name, ts: Date.now(), noktalar: [], kaynak: 'OpenStreetMap (Overpass)', notlar: { bos: true } };
+  // 0.1° hücreler: model çözünürlüğüne yakın; her hücreyi ilk noktasının koordinatıyla sorgula
+  const cells = new Map();
+  sp.forEach((o) => { const k = Math.round(o.la * 10) + ',' + Math.round(o.lo * 10); if (!cells.has(k)) cells.set(k, { la: o.la, lo: o.lo }); o.c = k; });
+  const cl = [...cells.values()], LA = cl.map((c) => c.la.toFixed(3)), LO = cl.map((c) => c.lo.toFixed(3)), arr = (x) => (Array.isArray(x) ? x : [x]);
+  const [mr, wr] = await Promise.allSettled([
+    getJsonRetry(`${OM_M}?latitude=${LA}&longitude=${LO}&current=wave_height,sea_surface_temperature&hourly=sea_surface_temperature&past_days=3&forecast_days=1&timezone=auto`),
+    getJsonRetry(`${OM_W}?latitude=${LA}&longitude=${LO}&current=wind_speed_10m,wind_gusts_10m&wind_speed_unit=kmh&timezone=auto`),
+  ]);
+  const M = mr.status === 'fulfilled' ? arr(mr.value) : [], Wd = wr.status === 'fulfilled' ? arr(wr.value) : [];
+  const keys = [...cells.keys()], cv = {};
+  keys.forEach((k, i) => { const m = M[i], w = Wd[i]; cv[k] = { st: m && m.current ? m.current.sea_surface_temperature : null, wh: m && m.current ? m.current.wave_height : null, dst: m ? sstTrendS(m) : null, ws: w && w.current ? w.current.wind_speed_10m : null, gu: w && w.current ? w.current.wind_gusts_10m : null, la: cells.get(k).la, lo: cells.get(k).lo }; });
+  const near = (k, f) => { if (cv[k][f] != null) return cv[k][f]; let b = null, bd = 1e9; for (const j of keys) if (cv[j][f] != null) { const d = hav(cv[k].la, cv[k].lo, cv[j].la, cv[j].lo); if (d < bd) { bd = d; b = cv[j][f]; } } return b; };
+  const out = new Array(sp.length).fill(null);
+  let i = 0, dfail = 0;
+  await Promise.all([0, 1, 2, 3, 4, 5].map(async () => { while (i < sp.length) { const k = i++; try { out[k] = await depthNear(sp[k].la, sp[k].lo); } catch (e) { dfail++; } } }));
+  const noktalar = sp.map((o, k) => ({ id: o.id, n: o.n, t: o.t, la: o.la, lo: o.lo, b: o.b, dep: out[k] ? out[k].m : null, yk: out[k] ? out[k].yakin : false, st: near(o.c, 'st'), dst: near(o.c, 'dst'), wh: near(o.c, 'wh'), ws: near(o.c, 'ws'), gu: near(o.c, 'gu') }));
+  return { il: name, ts: Date.now(), noktalar, kaynak: 'Noktalar: OpenStreetMap • Deniz/rüzgâr: Open-Meteo (model) • Derinlik: EMODnet', notlar: { denizAlinamadi: !M.length, ruzgarAlinamadi: !Wd.length, derinlikBilinen: out.filter(Boolean).length } };
+}
+function meraGet(p, k) {
+  if (MI.has(k)) return MI.get(k);
+  const pr = meraBuild(p).then((v) => { MC.set(k, { ts: Date.now(), v }); return v; }).finally(() => MI.delete(k));
+  MI.set(k, pr);
+  return pr;
+}
+app.get('/api/mera-verisi', async (req, res) => {
+  const k = String(req.query.il || ''), p = PROV.find((x) => slug(x[0]) === k);
+  if (!p) return res.status(400).json({ error: 'Geçersiz il.' });
+  if (!p[4]) return res.status(400).json({ error: 'Bu il kıyı ili değil.' });
+  const c = MC.get(k), age = c ? Date.now() - c.ts : Infinity;
+  if (c && age < 20 * 60 * 1000) return res.json(c.v);
+  if (c && age < 3 * 3600 * 1000) { meraGet(p, k).catch(() => {}); return res.json({ ...c.v, eski: true }); }
+  try { res.json(await meraGet(p, k)); } catch (e) { console.error('Mera verisi hata', k, e && e.message); res.status(502).json({ error: 'Nokta verisi kaynağına (OpenStreetMap) ulaşılamadı. Biraz sonra tekrar deneyin.' }); }
 });
 
 const PORT = process.env.PORT || 3000;

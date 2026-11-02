@@ -41,3 +41,9 @@ Notlar
 - Balık detayında "Haritada nerede tutulur?" seçili ilin çevresindeki gerçek OpenStreetMap noktalarını (liman, marina, iskele, mendirek, olta noktası) güncel koşul + EMODnet derinliği + türün derinlik aralığına göre sıralar. Yüzdeler koşul uygunluğudur, gerçek yakalama olasılığı değildir; taban yapısı verisi yoktur.
 - OSM'de kayıtlı olmayan yerler (ör. bir park veya kayalık kıyı) listelenmez.
 - Fotoğraf gelmiyorsa `https://<servis>.onrender.com/api/foto?debug=1` adresini açın: hangi türün neden bulunamadığını gösterir. Sunucu bulamazsa tarayıcı doğrudan Wikipedia'dan dener.
+
+## Sunucu uç noktaları (tüm dış veri sunucudan geçer: önbellekli, yedekli)
+- `/api/kosullar?il=` il hava+deniz • `/api/mera-verisi?il=` ilin OSM noktaları + deniz/rüzgâr + derinlik (bölge analizi) • `/api/nokta?lat=&lon=` haritaya dokunma • `/api/liman?s=&w=&n=&e=` liman/iskele • `/api/foto` ve `/foto/<tur>-k.jpg` balık fotoğrafları • `/api/derinlik` (EMODnet).
+- Overpass (OpenStreetMap) için 3 yedek sunucu denenir; liste `OVERPASS_URLS` ile değiştirilebilir (virgülle ayrılmış adresler).
+- Sorun giderme: Render → Logs sekmesinde "Overpass hata", "Foto hata", "Görsel indirilemedi" satırları nedeni gösterir. `/api/foto?debug=1` fotoğraf hatalarını listeler.
+- Bölge analizi ilk açılışta 15–40 sn sürebilir (ilin tüm noktaları için derinlik ve deniz verisi toplanır); sonra 20 dk önbellekten gelir.
